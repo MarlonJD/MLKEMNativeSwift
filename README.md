@@ -19,7 +19,7 @@ raw key representations, while keeping the ML-KEM core in the upstream
 
 ## Status
 
-- Package version target: `0.1.0`
+- Package version target: `0.2.0`
 - Upstream C core: `Vendor/mlkem-native` git submodule
 - Pinned upstream release: `v1.1.0`
 - Pinned upstream commit: `d2cae2be522a67bfae26100fdb520576f1b2ef90`
@@ -36,7 +36,7 @@ Add the package to `Package.swift`:
 
 ```swift
 dependencies: [
-    .package(url: "https://github.com/MarlonJD/MLKEMNativeSwift.git", from: "0.1.0")
+    .package(url: "https://github.com/MarlonJD/MLKEMNativeSwift.git", from: "0.2.0")
 ]
 ```
 
