@@ -6,6 +6,17 @@ Swift Package Manager wrapper for ML-KEM-768 on Apple platforms.
 [`mlkem-native`](https://github.com/pq-code-package/mlkem-native) and exposes a
 small Swift API shaped similarly to CryptoKit's ML-KEM API.
 
+## Why This Package Exists
+
+Apple's native CryptoKit ML-KEM API is useful, but it is only available on
+newer OS releases. I originally wrote this package so apps that still target
+iOS 18 can use ML-KEM-768 without waiting to require iOS 26.
+
+The goal is intentionally small: provide a Swift Package Manager dependency
+with CryptoKit-shaped key generation, encapsulation, decapsulation, and stable
+raw key representations, while keeping the ML-KEM core in the upstream
+`mlkem-native` C implementation instead of rewriting the algorithm in Swift.
+
 ## Status
 
 - Package version target: `0.1.0`
