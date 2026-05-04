@@ -36,6 +36,35 @@ struct MLKEMNativeSwiftTests {
         #expect(sharedSecretData(try privateKey.decapsulate(encapsulated.ciphertext)) == (try Data(hex: TestVector.sharedSecret)))
     }
 
+    @Test("Incremental Braid pieces match full deterministic encapsulation")
+    func incrementalBraidPiecesMatchFullEncapsulation() throws {
+        let seed = try Data(hex: TestVector.seed)
+        let coins = try Data(hex: TestVector.coins)
+        let privateKey = try MLKEMNative768.PrivateKey(seed: seed)
+        let full = try privateKey.publicKey.encapsulate(seed: coins)
+
+        let incrementalKey = try privateKey.publicKey.incrementalRepresentation()
+        let reconstructed = try MLKEMNative768.IncrementalPublicKey(
+            header: incrementalKey.header,
+            encapsulationKeyVector: incrementalKey.encapsulationKeyVector
+        )
+        let part1 = try MLKEMNative768.encapsulatePart1(header: incrementalKey.header, seed: coins)
+        let part2 = try MLKEMNative768.encapsulatePart2(
+            encapsulationSecret: part1.encapsulationSecret,
+            header: incrementalKey.header,
+            encapsulationKeyVector: incrementalKey.encapsulationKeyVector
+        )
+
+        #expect(incrementalKey.header.count == 64)
+        #expect(incrementalKey.encapsulationKeyVector.count == 1152)
+        #expect(reconstructed.publicKey.rawRepresentation == privateKey.publicKey.rawRepresentation)
+        #expect(part1.ciphertextPart1.count == 960)
+        #expect(part2.count == 128)
+        #expect(part1.ciphertextPart1 + part2 == full.ciphertext)
+        #expect(sharedSecretData(part1.sharedSecret) == sharedSecretData(full.sharedSecret))
+        #expect(sharedSecretData(try privateKey.decapsulate(ciphertextPart1: part1.ciphertextPart1, ciphertextPart2: part2)) == sharedSecretData(full.sharedSecret))
+    }
+
     @Test("Invalid public key is rejected")
     func invalidPublicKey() {
         #expect(throws: MLKEMError.invalidPublicKey) {

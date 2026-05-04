@@ -96,6 +96,38 @@ ML-KEM-768 sizes:
 - Ciphertext: 1088 bytes
 - Shared secret: 32 bytes
 - In-memory secret key: 2400 bytes
+- Incremental/Braid header: 64 bytes
+- Incremental/Braid public-key vector: 1152 bytes
+- Incremental/Braid ciphertext parts: 960 bytes + 128 bytes
+
+## Incremental ML-KEM for Triple Ratchets
+
+`MLKEMNative768` also exposes the split operations needed by
+Signal-style ML-KEM Braid / sparse post-quantum ratchets. A public key can be
+split into a small header plus the larger encapsulation-key vector; senders can
+derive `ct1` and the shared secret from the header first, then derive `ct2`
+after the vector arrives.
+
+```swift
+let privateKey = try MLKEMNative768.PrivateKey.generate()
+let braidKey = try privateKey.publicKey.incrementalRepresentation()
+
+let first = try MLKEMNative768.encapsulatePart1(header: braidKey.header)
+let ct2 = try MLKEMNative768.encapsulatePart2(
+    encapsulationSecret: first.encapsulationSecret,
+    header: braidKey.header,
+    encapsulationKeyVector: braidKey.encapsulationKeyVector
+)
+
+let opened = try privateKey.decapsulate(
+    ciphertextPart1: first.ciphertextPart1,
+    ciphertextPart2: ct2
+)
+```
+
+These calls are intended for protocol implementations that need to braid
+post-quantum SCKA output into a Double Ratchet. For ordinary one-shot KEM use,
+prefer `publicKey.encapsulate()` and `privateKey.decapsulate(ciphertext)`.
 
 ## Private Key Representation
 
@@ -124,6 +156,15 @@ privateKey.publicKey.rawRepresentation
 try MLKEMNative768.PublicKey(rawRepresentation: data)
 try publicKey.encapsulate()
 try privateKey.decapsulate(ciphertext)
+
+try publicKey.incrementalRepresentation()
+try MLKEMNative768.encapsulatePart1(header: header)
+try MLKEMNative768.encapsulatePart2(
+    encapsulationSecret: secret,
+    header: header,
+    encapsulationKeyVector: vector
+)
+try privateKey.decapsulate(ciphertextPart1: ct1, ciphertextPart2: ct2)
 ```
 
 ## Development

@@ -26,6 +26,57 @@ public enum MLKEMNative768 {
     public static let keypairSeedBytes = Int(MLKEM_NATIVE_SWIFT_768_KEYPAIR_SEED_BYTES)
     /// Deterministic encapsulation seed length, in bytes.
     public static let encapsulationSeedBytes = Int(MLKEM_NATIVE_SWIFT_768_ENCAPSULATION_SEED_BYTES)
+    /// ML-KEM Braid header length: ek_seed || SHA3-256(public key).
+    public static let incrementalHeaderBytes = Int(MLKEM_NATIVE_SWIFT_768_INCREMENTAL_HEADER_BYTES)
+    /// Vector portion of an ML-KEM-768 public key, excluding the 32-byte seed.
+    public static let encapsulationKeyVectorBytes = Int(MLKEM_NATIVE_SWIFT_768_ENCAPSULATION_KEY_VECTOR_BYTES)
+    /// First ciphertext component used by ML-KEM Braid.
+    public static let ciphertextPart1Bytes = Int(MLKEM_NATIVE_SWIFT_768_CIPHERTEXT_PART1_BYTES)
+    /// Second ciphertext component used by ML-KEM Braid.
+    public static let ciphertextPart2Bytes = Int(MLKEM_NATIVE_SWIFT_768_CIPHERTEXT_PART2_BYTES)
+    /// Opaque secret returned by Encaps1 and consumed by Encaps2.
+    public static let incrementalEncapsulationSecretBytes = Int(MLKEM_NATIVE_SWIFT_768_INCREMENTAL_ENCAPSULATION_SECRET_BYTES)
+
+    /// Split public-key representation used by ML-KEM Braid.
+    public struct IncrementalPublicKey: Sendable {
+        public let header: Data
+        public let encapsulationKeyVector: Data
+        public let publicKey: PublicKey
+
+        public init(header: Data, encapsulationKeyVector: Data) throws {
+            guard header.count == incrementalHeaderBytes,
+                  encapsulationKeyVector.count == encapsulationKeyVectorBytes else {
+                throw MLKEMError.invalidPublicKey
+            }
+
+            var pk = [UInt8](repeating: 0, count: publicKeyBytes)
+            let status = header.withUnsafeBytes { headerBytes in
+                encapsulationKeyVector.withUnsafeBytes { vectorBytes in
+                    pk.withUnsafeMutableBytes { pkBytes in
+                        mlkem_native_swift_768_public_key_from_incremental(
+                            pkBytes.bindMemory(to: UInt8.self).baseAddress!,
+                            headerBytes.bindMemory(to: UInt8.self).baseAddress!,
+                            vectorBytes.bindMemory(to: UInt8.self).baseAddress!
+                        )
+                    }
+                }
+            }
+            guard status == 0 else {
+                throw MLKEMError.invalidPublicKey
+            }
+
+            self.header = header
+            self.encapsulationKeyVector = encapsulationKeyVector
+            self.publicKey = try PublicKey(rawRepresentation: Data(pk))
+        }
+    }
+
+    /// Result of the first half of an incremental encapsulation.
+    public struct IncrementalEncapsulation: Sendable {
+        public let encapsulationSecret: Data
+        public let ciphertextPart1: Data
+        public let sharedSecret: SymmetricKey
+    }
 
     /// An ML-KEM-768 private key.
     ///
@@ -137,6 +188,34 @@ public enum MLKEMNative768 {
             }
             return SymmetricKey(data: Data(ss))
         }
+
+        /// Decapsulates split ML-KEM Braid ciphertext components.
+        public func decapsulate(ciphertextPart1: Data, ciphertextPart2: Data) throws -> SymmetricKey {
+            guard ciphertextPart1.count == ciphertextPart1Bytes,
+                  ciphertextPart2.count == ciphertextPart2Bytes else {
+                throw MLKEMError.invalidCiphertext
+            }
+
+            var ss = [UInt8](repeating: 0, count: sharedSecretBytes)
+            let status = ciphertextPart1.withUnsafeBytes { ct1Bytes in
+                ciphertextPart2.withUnsafeBytes { ct2Bytes in
+                    secretKey.withUnsafeBytes { skBytes in
+                        ss.withUnsafeMutableBytes { ssBytes in
+                            mlkem_native_swift_768_decapsulate_parts(
+                                ssBytes.bindMemory(to: UInt8.self).baseAddress!,
+                                ct1Bytes.bindMemory(to: UInt8.self).baseAddress!,
+                                ct2Bytes.bindMemory(to: UInt8.self).baseAddress!,
+                                skBytes.bindMemory(to: UInt8.self).baseAddress!
+                            )
+                        }
+                    }
+                }
+            }
+            guard status == 0 else {
+                throw MLKEMError.operationFailed
+            }
+            return SymmetricKey(data: Data(ss))
+        }
     }
 
     /// An ML-KEM-768 public key.
@@ -191,6 +270,103 @@ public enum MLKEMNative768 {
             }
             return (Data(ct), SymmetricKey(data: Data(ss)))
         }
+
+        /// Returns the ML-KEM Braid split representation for this public key.
+        public func incrementalRepresentation() throws -> IncrementalPublicKey {
+            var header = [UInt8](repeating: 0, count: incrementalHeaderBytes)
+            var vector = [UInt8](repeating: 0, count: encapsulationKeyVectorBytes)
+            let status = rawRepresentation.withUnsafeBytes { pkBytes in
+                header.withUnsafeMutableBytes { headerBytes in
+                    vector.withUnsafeMutableBytes { vectorBytes in
+                        mlkem_native_swift_768_public_key_to_incremental(
+                            headerBytes.bindMemory(to: UInt8.self).baseAddress!,
+                            vectorBytes.bindMemory(to: UInt8.self).baseAddress!,
+                            pkBytes.bindMemory(to: UInt8.self).baseAddress!
+                        )
+                    }
+                }
+            }
+            guard status == 0 else {
+                throw MLKEMError.invalidPublicKey
+            }
+            return try IncrementalPublicKey(header: Data(header), encapsulationKeyVector: Data(vector))
+        }
+    }
+
+    /// Runs the first half of ML-KEM Braid encapsulation using fresh randomness.
+    public static func encapsulatePart1(header: Data) throws -> IncrementalEncapsulation {
+        try encapsulatePart1(header: header, seed: randomBytes(count: encapsulationSeedBytes))
+    }
+
+    static func encapsulatePart1(header: Data, seed: Data) throws -> IncrementalEncapsulation {
+        guard header.count == incrementalHeaderBytes else {
+            throw MLKEMError.invalidPublicKey
+        }
+        guard seed.count == encapsulationSeedBytes else {
+            throw MLKEMError.operationFailed
+        }
+
+        var secret = [UInt8](repeating: 0, count: incrementalEncapsulationSecretBytes)
+        var ct1 = [UInt8](repeating: 0, count: ciphertextPart1Bytes)
+        var ss = [UInt8](repeating: 0, count: sharedSecretBytes)
+        let status = header.withUnsafeBytes { headerBytes in
+            seed.withUnsafeBytes { seedBytes in
+                secret.withUnsafeMutableBytes { secretBytes in
+                    ct1.withUnsafeMutableBytes { ct1Bytes in
+                        ss.withUnsafeMutableBytes { ssBytes in
+                            mlkem_native_swift_768_encapsulate_part1_derand(
+                                secretBytes.bindMemory(to: UInt8.self).baseAddress!,
+                                ct1Bytes.bindMemory(to: UInt8.self).baseAddress!,
+                                ssBytes.bindMemory(to: UInt8.self).baseAddress!,
+                                headerBytes.bindMemory(to: UInt8.self).baseAddress!,
+                                seedBytes.bindMemory(to: UInt8.self).baseAddress!
+                            )
+                        }
+                    }
+                }
+            }
+        }
+        guard status == 0 else {
+            throw MLKEMError.operationFailed
+        }
+        return IncrementalEncapsulation(
+            encapsulationSecret: Data(secret),
+            ciphertextPart1: Data(ct1),
+            sharedSecret: SymmetricKey(data: Data(ss))
+        )
+    }
+
+    /// Completes ML-KEM Braid encapsulation using the vector half of the public key.
+    public static func encapsulatePart2(encapsulationSecret: Data,
+                                        header: Data,
+                                        encapsulationKeyVector: Data) throws -> Data {
+        guard encapsulationSecret.count == incrementalEncapsulationSecretBytes else {
+            throw MLKEMError.operationFailed
+        }
+        guard header.count == incrementalHeaderBytes,
+              encapsulationKeyVector.count == encapsulationKeyVectorBytes else {
+            throw MLKEMError.invalidPublicKey
+        }
+
+        var ct2 = [UInt8](repeating: 0, count: ciphertextPart2Bytes)
+        let status = encapsulationSecret.withUnsafeBytes { secretBytes in
+            header.withUnsafeBytes { headerBytes in
+                encapsulationKeyVector.withUnsafeBytes { vectorBytes in
+                    ct2.withUnsafeMutableBytes { ct2Bytes in
+                        mlkem_native_swift_768_encapsulate_part2(
+                            ct2Bytes.bindMemory(to: UInt8.self).baseAddress!,
+                            secretBytes.bindMemory(to: UInt8.self).baseAddress!,
+                            headerBytes.bindMemory(to: UInt8.self).baseAddress!,
+                            vectorBytes.bindMemory(to: UInt8.self).baseAddress!
+                        )
+                    }
+                }
+            }
+        }
+        guard status == 0 else {
+            throw MLKEMError.invalidPublicKey
+        }
+        return Data(ct2)
     }
 
     private static func randomBytes(count: Int) throws -> Data {
